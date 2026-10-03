@@ -1260,9 +1260,14 @@ absl::Status WeightSynchronizerBase::UnbindWeights() {
   if (buffer_holds_.empty()) {
     return absl::OkStatus();
   }
-  {
+  // Only the auto-H2D path schedules device work from the receive path (same
+  // gate as DrainPendingH2d). Without auto_h2d, RegisterExpectedLayerChunks
+  // still files a pending_h2d_states_ entry per transfer that the non-auto
+  // OnDataReceived never erases, so the map is not a "device work pending"
+  // signal in that mode.
+  if (auto_h2d_) {
     absl::MutexLock lock(pending_h2d_mu_);
-    if (!pending_h2d_states_.empty() || !active_h2d_uuids_.empty()) {
+    if (!active_h2d_uuids_.empty()) {
       return absl::FailedPreconditionError(
           "UnbindWeights: an auto-H2D ingestion is still pending; call "
           "WaitForTransferCompletion() or DrainPendingH2d() first");
