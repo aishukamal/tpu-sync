@@ -250,6 +250,27 @@ NumaAwareWeightSynchronizer::NumaAwareWeightSynchronizer(
 
 NumaAwareWeightSynchronizer::~NumaAwareWeightSynchronizer() = default;
 
+absl::Status NumaAwareWeightSynchronizer::UnbindWeights() {
+  // Refuse before touching anything if any sub-synchronizer still has an
+  // auto-H2D ingestion pending, so a failure leaves every sub bound.
+  for (auto& sub : sub_synchronizers_) {
+    if (!sub) continue;
+    RETURN_IF_ERROR(sub->UnbindWeights());
+  }
+#ifndef WITHOUT_PYTHON
+  // Last references to the tensors' storage buffers held by this object.
+  buffer_refs_.clear();
+#endif
+  return absl::OkStatus();
+}
+
+bool NumaAwareWeightSynchronizer::has_bound_weights() const {
+  for (const auto& sub : sub_synchronizers_) {
+    if (sub && sub->has_bound_weights()) return true;
+  }
+  return false;
+}
+
 void NumaAwareWeightSynchronizer::InitSubManagers(
     const std::vector<std::vector<raiden::RaidenBufferHandle>>& layer_buffers,
     std::optional<int> local_port, bool unsafe_skip_buffer_lock,
@@ -939,6 +960,14 @@ WeightSynchronizer::WeightSynchronizer(
 }
 
 WeightSynchronizer::~WeightSynchronizer() = default;
+
+absl::Status WeightSynchronizer::UnbindWeights() {
+  return numa_manager_->UnbindWeights();
+}
+
+bool WeightSynchronizer::has_bound_weights() const {
+  return numa_manager_->has_bound_weights();
+}
 
 absl::StatusOr<raiden::PjRtCopyFuture> WeightSynchronizer::D2h(uint64_t uuid) {
   return numa_manager_->D2h(uuid);

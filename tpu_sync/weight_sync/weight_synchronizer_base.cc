@@ -1255,6 +1255,35 @@ absl::Status WeightSynchronizerBase::BindWeights(
   return absl::OkStatus();
 }
 
+absl::Status WeightSynchronizerBase::UnbindWeights() {
+  RAIDEN_TRACE("WeightSynchronizerBase::UnbindWeights");
+  if (buffer_holds_.empty()) {
+    return absl::OkStatus();
+  }
+  {
+    absl::MutexLock lock(pending_h2d_mu_);
+    if (!pending_h2d_states_.empty() || !active_h2d_uuids_.empty()) {
+      return absl::FailedPreconditionError(
+          "UnbindWeights: an auto-H2D ingestion is still pending; call "
+          "WaitForTransferCompletion() or DrainPendingH2d() first");
+    }
+  }
+  // The only device DMAs this object tracks after H2d()/D2h() returned are the
+  // tiled-scratchpad copies; wait for them so no DMA targets a buffer whose
+  // last hold is about to drop.
+  for (auto& sp_ptr : tiled_scratchpads_) {
+    if (!sp_ptr) continue;
+    absl::MutexLock lock(sp_ptr->mu);
+    if (sp_ptr->in_flight_future.IsValid()) {
+      TF_RETURN_IF_ERROR(sp_ptr->in_flight_future.Await());
+    }
+  }
+  // Host side untouched: layers_ (staging arena), host_allocator_, listener_,
+  // server_, pools, metrics and skip-tiling state all survive.
+  buffer_holds_.clear();
+  return absl::OkStatus();
+}
+
 absl::Status WeightSynchronizerBase::RegisterExpectedChunks(
     uint64_t uuid, uint32_t expected_chunks) {
   if (control_delegate_ != nullptr) {

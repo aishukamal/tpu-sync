@@ -229,6 +229,63 @@ class WeightSynchronizerTorchTest(parameterized.TestCase):
       ("fp32", torch.float32),
       ("bf16", torch.bfloat16),
   )
+  def test_unbind_then_rebind_weights(self, dtype):
+    """Receiver unbinds its device tensors, still receives a push into host
+    memory, rebinds fresh tensors of the same shapes and h2d lands in them."""
+    shape = (self.block_size, 128, 8)
+    src_tensors = [
+        [torch.full(shape, fill_value=7.0, dtype=dtype, device=self.device)]
+        for _ in range(self.num_layers)
+    ]
+    dst_tensors = [
+        [torch.zeros(shape, dtype=dtype, device=self.device)]
+        for _ in range(self.num_layers)
+    ]
+    ws_source = WeightSynchronizer(
+        src_tensors, local_port=0, parallelism=1, bind_ip="127.0.0.1"
+    )
+    ws_dest = WeightSynchronizer(
+        dst_tensors, local_port=0, parallelism=1, bind_ip="127.0.0.1"
+    )
+    peer_dest = f"127.0.0.1:{ws_dest.local_port}"
+    self.assertTrue(ws_dest.has_bound_weights)
+
+    # Unbind the receiver's device tensors; endpoints and host buffers stay.
+    endpoints_before = ws_dest.get_local_endpoints()
+    ws_dest.unbind_weights()
+    self.assertFalse(ws_dest.has_bound_weights)
+    self.assertEqual(ws_dest.get_local_endpoints(), endpoints_before)
+    self.assertTrue(ws_dest.is_listener_active or ws_dest.listener_port is None)
+    del dst_tensors  # the receiver holds no reference any more
+
+    # The push still lands in the receiver's host buffers; h2d is a no-op.
+    ws_source.push_weights([peer_dest])
+    ws_dest.h2d()
+    host_view = ws_dest.get_host_buffer(0, 0)
+    expected = src_tensors[0][0].cpu().contiguous().view(torch.uint8).flatten()
+    self.assertTrue(torch.equal(host_view[: expected.numel()], expected))
+
+    # Rebind fresh tensors of the same shapes and install.
+    new_dst_tensors = [
+        [torch.full(shape, fill_value=-1.0, dtype=dtype, device=self.device)]
+        for _ in range(self.num_layers)
+    ]
+    ws_dest.bind_weights(new_dst_tensors)
+    self.assertTrue(ws_dest.has_bound_weights)
+    ws_dest.h2d()
+    for l in range(self.num_layers):
+      self.assertTrue(
+          torch.equal(new_dst_tensors[l][0].cpu(), src_tensors[l][0].cpu())
+      )
+    # Unbind is idempotent.
+    ws_dest.unbind_weights()
+    ws_dest.unbind_weights()
+    self.assertFalse(ws_dest.has_bound_weights)
+
+  @parameterized.named_parameters(
+      ("fp32", torch.float32),
+      ("bf16", torch.bfloat16),
+  )
   def test_heterogeneous_layers_small_first(self, dtype):
     shapes = [(1024,), (1024, 3072), (2048, 2048)]
     src_tensors = [

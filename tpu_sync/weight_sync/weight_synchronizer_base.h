@@ -245,6 +245,23 @@ class WeightSynchronizerBase : public tpu_raiden::RaidenManagerBase {
       const std::vector<std::vector<raiden::RaidenBufferHandle>>&
           layer_buffers);
 
+  // Drops the holds on the currently bound device buffers and nothing else:
+  // the host staging buffers (`layers_`), the listener, the transport server,
+  // the thread pools and the metrics all stay, so an incoming push can still
+  // land in host memory while no device buffers are bound. H2d()/D2h() are
+  // no-ops until BindWeights() binds new buffers of the same layer / shard /
+  // size configuration (the configuration recorded at construction is kept).
+  //
+  // Returns FailedPreconditionError while an auto-H2D ingestion is pending
+  // (call WaitForTransferCompletion() or DrainPendingH2d() first). In-flight
+  // tiled-scratchpad DMAs are awaited before the holds are released; a
+  // non-auto H2d()/D2h() future must have been awaited by the caller.
+  absl::Status UnbindWeights();
+
+  // Whether device buffers are currently bound (false after UnbindWeights()
+  // and for the CPU-only constructors).
+  bool has_bound_weights() const { return !buffer_holds_.empty(); }
+
   virtual void StoreSkipTiling(
       uint64_t uuid, const tpu_sync::rpc::StartTransferRequest& request);
   virtual void StoreSkipTilingLocal(

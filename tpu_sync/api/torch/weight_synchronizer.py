@@ -102,6 +102,24 @@ class WeightSynchronizer:
     """Dynamically re-binds new device weights in-place without daemon restart."""
     self._impl.bind_weights(device_tensors)
 
+  def unbind_weights(self) -> None:
+    """Releases the device tensors bound to this synchronizer, keeping the host side.
+
+    Drops every native reference to the bound device tensors (PjRt buffer
+    holds and the torch_tpu storage handles) so the caller can free their HBM,
+    while the host staging buffers, the listener and the transfer endpoints
+    stay alive and keep receiving pushes. `h2d()` / `d2h()` are no-ops until
+    `bind_weights()` is called with new tensors of the same shapes. Raises if
+    an auto-H2D ingestion is still pending (call
+    `wait_for_transfer_completion()` first).
+    """
+    self._impl.unbind_weights()
+
+  @property
+  def has_bound_weights(self) -> bool:
+    """Whether device tensors are currently bound (False after unbind_weights)."""
+    return self._impl.has_bound_weights
+
   def d2h(self) -> None:
     """Triggers asynchronous D2H copy of current weights to Host buffer."""
     self._impl.D2h()

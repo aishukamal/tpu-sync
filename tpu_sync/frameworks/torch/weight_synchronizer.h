@@ -67,6 +67,15 @@ class NumaAwareWeightSynchronizer
       const std::vector<std::vector<at::Tensor>>& device_tensors);
 #endif
 
+  // Releases every reference this object holds on the bound device tensors
+  // (the sub-synchronizers' PjRt buffer holds and the torch_tpu
+  // TensorBufferHandles that pin the tensors' storage) while keeping the host
+  // staging buffers, listener and endpoints. After this the caller may free
+  // the tensors' storage; BindWeights() with new tensors of the same shapes
+  // re-arms H2d()/D2h(). See WeightSynchronizerBase::UnbindWeights.
+  absl::Status UnbindWeights();
+  bool has_bound_weights() const;
+
   // CPU / Mock metadata constructor for tests without PJRT TPU devices
   NumaAwareWeightSynchronizer(
       size_t num_layers, size_t num_shards, size_t slice_byte_size,
@@ -176,6 +185,9 @@ class WeightSynchronizer {
   absl::Status BindWeights(
       const std::vector<std::vector<at::Tensor>>& device_tensors);
 #endif
+
+  absl::Status UnbindWeights();
+  bool has_bound_weights() const;
 
   // CPU / Mock metadata constructor for tests without PJRT TPU devices
   WeightSynchronizer(size_t num_layers, size_t num_shards,

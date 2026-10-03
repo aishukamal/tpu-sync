@@ -664,6 +664,19 @@ NB_MODULE(_tpu_raiden_torch, m) {
             }
           },
           nb::arg("device_tensors"), nb::call_guard<nb::gil_scoped_release>())
+      .def(
+          "unbind_weights",
+          [](WeightSynchronizer& self) {
+            absl::Status s = self.UnbindWeights();
+            if (!s.ok()) {
+              throw std::runtime_error(
+                  "WeightSynchronizer unbind_weights failed: " +
+                  std::string(s.message()));
+            }
+          },
+          nb::call_guard<nb::gil_scoped_release>())
+      .def_prop_ro("has_bound_weights",
+                   &WeightSynchronizer::has_bound_weights)
 
       .def(
           "D2h",
