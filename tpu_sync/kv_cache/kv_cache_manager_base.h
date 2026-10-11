@@ -910,6 +910,11 @@ class KVCacheManagerBase : public tpu_raiden::RaidenManagerBase {
     size_t shard_idx;
   };
 
+  // One future per work. A dispatch that fails after issuing some copies
+  // still returns one per work: each fails with the dispatch error once every
+  // issued copy has completed (raiden::FailAfter), so joining them never
+  // reports the failure while an issued copy still runs. Fails outright only
+  // if no copy was issued.
   absl::StatusOr<std::vector<raiden::PjRtCopyFuture>> DispatchH2dWork(
       const std::vector<CopyWork>& works, std::optional<int64_t> slot_idx,
       bool is_partial, const std::vector<int64_t>& src_offsets_major_dim,
@@ -921,6 +926,22 @@ class KVCacheManagerBase : public tpu_raiden::RaidenManagerBase {
       bool is_partial, const std::vector<int64_t>& src_offsets,
       const std::vector<int64_t>& dst_offsets,
       const std::vector<int64_t>& copy_sizes);
+
+  // Issue the copies of |works| in order, appending each issued copy's future
+  // to |issued|; on an error, |issued| holds the copies issued before it.
+  absl::Status IssueH2dWorks(const std::vector<CopyWork>& works,
+                             std::optional<int64_t> slot_idx, bool is_partial,
+                             const std::vector<int64_t>& src_offsets_major_dim,
+                             const std::vector<int64_t>& dst_offsets_major_dim,
+                             const std::vector<int64_t>& copy_sizes_major_dim,
+                             std::vector<raiden::PjRtCopyFuture>& issued);
+
+  absl::Status IssueD2hWorks(const std::vector<CopyWork>& works,
+                             std::optional<int64_t> slot_idx, bool is_partial,
+                             const std::vector<int64_t>& src_offsets,
+                             const std::vector<int64_t>& dst_offsets,
+                             const std::vector<int64_t>& copy_sizes,
+                             std::vector<raiden::PjRtCopyFuture>& issued);
 
   // Override parent AllocateBlocks using our dynamic block manager!
   absl::StatusOr<std::vector<int>> AllocateBlocks(size_t num_blocks,

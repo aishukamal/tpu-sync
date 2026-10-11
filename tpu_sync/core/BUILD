@@ -395,6 +395,23 @@ cc_library(
 )
 
 cc_test(
+    name = "raw_transfer_core_fail_after_test",
+    srcs = ["raw_transfer_core_fail_after_test.cc"],
+    copts = [
+        "-fno-strict-aliasing",
+        "-fexceptions",
+    ],
+    features = ["-use_header_modules"],
+    deps = [
+        ":raw_transfer_core",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_googletest//:gtest_main",
+        "@xla//xla:future",
+    ],
+)
+
+cc_test(
     name = "raw_dma_pacer_test",
     srcs = ["raw_dma_pacer_test.cc"],
     copts = [

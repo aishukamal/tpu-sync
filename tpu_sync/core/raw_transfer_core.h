@@ -482,7 +482,8 @@ struct PjRtCopyFuture {
 
   template <typename F>
   void OnReady(F&& f) {
-    if (!future.IsValid() && !event_bundles.empty()) {
+    xla::Future<> ready = future;
+    if (!event_bundles.empty()) {
       // One PJRT completion callback per event, joined into a single future.
       // Callbacks run on PJRT completion threads, so no thread is held per
       // in-flight copy.
@@ -517,12 +518,20 @@ struct PjRtCopyFuture {
           }
         }
       }
-      // With no live events this is an already-successful future.
-      future = xla::JoinFutures(event_futures);
+      if (future.IsValid()) {
+        // JoinPjRtCopyFutures can carry both a future and events; the join is
+        // done only when both are.
+        event_futures.push_back(future);
+        ready = xla::JoinFutures(event_futures);
+      } else {
+        // With no live events this is an already-successful future.
+        future = xla::JoinFutures(event_futures);
+        ready = future;
+      }
     }
 
-    if (future.IsValid()) {
-      future.OnReady([holds = holds, keep_alive = keep_alive,
+    if (ready.IsValid()) {
+      ready.OnReady([holds = holds, keep_alive = keep_alive,
                       f = std::forward<F>(f)](absl::Status status) mutable {
         if (status.ok()) {
           std::forward<F>(f)(absl::StatusOr<BufferHolders>(holds));
@@ -612,6 +621,32 @@ inline PjRtCopyFuture JoinPjRtCopyFutures(
   }
   joined.holds = std::move(combined_holds);
   return joined;
+}
+
+// A copy future that has already failed with |status|.
+inline PjRtCopyFuture FailedCopyFuture(absl::Status status) {
+  auto [promise, future] = xla::MakePromise();
+  promise.Set(std::move(status));
+  return PjRtCopyFuture(std::move(future), BufferHolders{});
+}
+
+// A copy future that fails with |status| once every copy in |issued| has
+// completed, whatever their own outcome, and holds their buffers until then.
+// For a dispatch that fails after issuing some copies: nothing else holds
+// those copies, and they still read and write the buffers, so the failure must
+// not be reported before they end.
+inline PjRtCopyFuture FailAfter(absl::Span<const PjRtCopyFuture> issued,
+                                absl::Status status) {
+  PjRtCopyFuture joined = JoinPjRtCopyFutures(issued);
+  auto [promise, future] = xla::MakePromise();
+  BufferHolders holds = joined.holds;
+  std::shared_ptr<void> keep_alive = joined.keep_alive;
+  joined.OnReady([promise = std::move(promise), status = std::move(status)](
+                     absl::StatusOr<BufferHolders>) mutable {
+    promise.Set(std::move(status));
+  });
+  return PjRtCopyFuture(std::move(future), std::move(holds),
+                        std::move(keep_alive));
 }
 
 // One shard's worth of D2h copies (device->host). offsets in BYTES.

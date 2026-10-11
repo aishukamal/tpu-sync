@@ -343,6 +343,23 @@ double ComputeDmaTransferTimeMs(absl::string_view dma_metric,
   return std::max(0.0, absl::ToDoubleMilliseconds(end_time - effective_start));
 }
 
+// One future per work out of an issue that may have stopped early. When it
+// stopped after issuing some copies, every work gets the same future: it fails
+// with |status| once each issued copy has completed, so the failure is never
+// reported while one still runs. Fails outright when nothing was issued.
+absl::StatusOr<std::vector<raiden::PjRtCopyFuture>> OnePerWork(
+    std::vector<raiden::PjRtCopyFuture> issued, size_t num_works,
+    absl::Status status) {
+  if (status.ok()) return issued;
+  if (issued.empty()) return status;
+  LOG(WARNING) << "Copy dispatch failed after issuing " << issued.size()
+               << " of " << num_works
+               << " copies; reporting the failure once they end: " << status;
+  raiden::PjRtCopyFuture failed =
+      raiden::FailAfter(absl::MakeConstSpan(issued), std::move(status));
+  return std::vector<raiden::PjRtCopyFuture>(num_works, failed);
+}
+
 // Joins the given PjRtCopyFutures and records transfer latency and per-device
 // bytes transferred if telemetry is enabled.
 raiden::PjRtCopyFuture JoinAndRecordTelemetry(
@@ -894,16 +911,36 @@ absl::StatusOr<raiden::PjRtCopyFuture> KVCacheManagerBase::H2dSyncDispatch(
     }
 
     VLOG(1) << "H2d: Awaiting scheduled dispatches...";
+    // Every group is awaited even after one fails: the others may have issued
+    // copies, and a failure reported before they end would let the caller
+    // reuse buffers they still read and write. A failed group (none of its
+    // copies issued) fails its slots; the join reports it after the rest.
+    bool any_group_ok = false;
+    absl::Status first_error;
     for (auto& pf : pending_futures) {
-      ABSL_ASSIGN_OR_RETURN(auto local_futures, pf.future.get(),
-                            _.VLog(1) << "H2d: Scheduled dispatch failed: ");
+      absl::StatusOr<std::vector<raiden::PjRtCopyFuture>> local_futures =
+          pf.future.get();
+      if (!local_futures.ok()) {
+        VLOG(1) << "H2d: Scheduled dispatch failed: "
+                << local_futures.status();
+        if (first_error.ok()) first_error = local_futures.status();
+        raiden::PjRtCopyFuture failed =
+            raiden::FailedCopyFuture(local_futures.status());
+        for (const auto& work : pf.works) {
+          logical_futures[work.layer_idx * num_shards_ + work.shard_idx] =
+              failed;
+        }
+        continue;
+      }
+      any_group_ok = true;
       VLOG(1) << "H2d: Scheduled dispatch completed successfully.";
       for (size_t i = 0; i < pf.works.size(); ++i) {
         const auto& work = pf.works[i];
         logical_futures[work.layer_idx * num_shards_ + work.shard_idx] =
-            std::move(local_futures[i]);
+            std::move((*local_futures)[i]);
       }
     }
+    if (!any_group_ok && !first_error.ok()) return first_error;
   }
 
   VLOG(1) << "KVCacheManagerBase::H2d completed. Returning logical futures.";
@@ -1029,18 +1066,36 @@ KVCacheManagerBase::DispatchD2hChunks(const std::vector<int64_t>& src_offsets,
     }
 
     VLOG(1) << "DispatchD2hChunks: Awaiting scheduled dispatches...";
+    // Every group is awaited even after one fails: the others may have issued
+    // copies, and a failure reported before they end would let the caller
+    // reuse buffers they still read and write. A failed group (none of its
+    // copies issued) fails its slots; the join reports it after the rest.
+    bool any_group_ok = false;
+    absl::Status first_error;
     for (auto& pf : pending_futures) {
-      ABSL_ASSIGN_OR_RETURN(
-          auto local_futures, pf.future.get(),
-          _.VLog(1) << "DispatchD2hChunks: Scheduled dispatch failed: ");
-      VLOG(1)
-          << "DispatchD2hChunks: Scheduled dispatch completed successfully.";
+      absl::StatusOr<std::vector<raiden::PjRtCopyFuture>> local_futures =
+          pf.future.get();
+      if (!local_futures.ok()) {
+        VLOG(1) << "DispatchD2hChunks: Scheduled dispatch failed: "
+                << local_futures.status();
+        if (first_error.ok()) first_error = local_futures.status();
+        raiden::PjRtCopyFuture failed =
+            raiden::FailedCopyFuture(local_futures.status());
+        for (const auto& work : pf.works) {
+          logical_futures[work.layer_idx * num_shards_ + work.shard_idx] =
+              failed;
+        }
+        continue;
+      }
+      any_group_ok = true;
+      VLOG(1) << "DispatchD2hChunks: Scheduled dispatch completed successfully.";
       for (size_t i = 0; i < pf.works.size(); ++i) {
         const auto& work = pf.works[i];
         logical_futures[work.layer_idx * num_shards_ + work.shard_idx] =
-            std::move(local_futures[i]);
+            std::move((*local_futures)[i]);
       }
     }
+    if (!any_group_ok && !first_error.ok()) return first_error;
   }
 
   VLOG(1) << "KVCacheManagerBase::DispatchD2hChunks completed. Returning "
@@ -2708,9 +2763,21 @@ KVCacheManagerBase::DispatchH2dWork(
     bool is_partial, const std::vector<int64_t>& src_offsets_major_dim,
     const std::vector<int64_t>& dst_offsets_major_dim,
     const std::vector<int64_t>& copy_sizes_major_dim) {
+  std::vector<raiden::PjRtCopyFuture> issued;
+  absl::Status status =
+      IssueH2dWorks(works, slot_idx, is_partial, src_offsets_major_dim,
+                    dst_offsets_major_dim, copy_sizes_major_dim, issued);
+  return OnePerWork(std::move(issued), works.size(), std::move(status));
+}
+
+absl::Status KVCacheManagerBase::IssueH2dWorks(
+    const std::vector<CopyWork>& works, std::optional<int64_t> slot_idx,
+    bool is_partial, const std::vector<int64_t>& src_offsets_major_dim,
+    const std::vector<int64_t>& dst_offsets_major_dim,
+    const std::vector<int64_t>& copy_sizes_major_dim,
+    std::vector<raiden::PjRtCopyFuture>& local_futures) {
   VLOG(1) << "KVCacheManagerBase::DispatchH2dWork started. Works count: "
           << works.size() << ", Thread: " << std::this_thread::get_id();
-  std::vector<raiden::PjRtCopyFuture> local_futures;
   for (const auto& work : works) {
     const auto& layer_info = layers_[work.layer_idx];
     const auto& shard_hold =
@@ -2790,7 +2857,7 @@ KVCacheManagerBase::DispatchH2dWork(
   VLOG(1) << "KVCacheManagerBase::DispatchH2dWork completed. Dispatched "
           << local_futures.size()
           << " buffer futures. Thread: " << std::this_thread::get_id();
-  return local_futures;
+  return absl::OkStatus();
 }
 
 absl::StatusOr<std::vector<raiden::PjRtCopyFuture>>
@@ -2800,9 +2867,20 @@ KVCacheManagerBase::DispatchD2hWork(const std::vector<CopyWork>& works,
                                     const std::vector<int64_t>& src_offsets,
                                     const std::vector<int64_t>& dst_offsets,
                                     const std::vector<int64_t>& copy_sizes) {
+  std::vector<raiden::PjRtCopyFuture> issued;
+  absl::Status status = IssueD2hWorks(works, slot_idx, is_partial, src_offsets,
+                                      dst_offsets, copy_sizes, issued);
+  return OnePerWork(std::move(issued), works.size(), std::move(status));
+}
+
+absl::Status KVCacheManagerBase::IssueD2hWorks(
+    const std::vector<CopyWork>& works, std::optional<int64_t> slot_idx,
+    bool is_partial, const std::vector<int64_t>& src_offsets,
+    const std::vector<int64_t>& dst_offsets,
+    const std::vector<int64_t>& copy_sizes,
+    std::vector<raiden::PjRtCopyFuture>& local_futures) {
   VLOG(1) << "KVCacheManagerBase::DispatchD2hWork started. Works count: "
           << works.size() << ", Thread: " << std::this_thread::get_id();
-  std::vector<raiden::PjRtCopyFuture> local_futures;
   for (const auto& work : works) {
     const auto& layer_info = layers_[work.layer_idx];
     const auto& shard_hold =
@@ -2881,7 +2959,7 @@ KVCacheManagerBase::DispatchD2hWork(const std::vector<CopyWork>& works,
   VLOG(1) << "KVCacheManagerBase::DispatchD2hWork completed. Dispatched "
           << local_futures.size()
           << " buffer futures. Thread: " << std::this_thread::get_id();
-  return local_futures;
+  return absl::OkStatus();
 }
 
 absl::Status KVCacheManagerBase::OnSingleBlockReceived(int block_id,
