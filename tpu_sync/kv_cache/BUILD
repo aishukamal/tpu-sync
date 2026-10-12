@@ -307,6 +307,26 @@ cc_library(
     alwayslink = 1,
 )
 
+cc_test(
+    name = "kv_cache_manager_async_dispatch_test",
+    srcs = ["kv_cache_manager_async_dispatch_test.cc"],
+    copts = [
+        "-fno-strict-aliasing",
+        "-fexceptions",
+    ],
+    features = ["-use_header_modules"],
+    deps = [
+        ":kv_cache_manager_base",
+        "//tpu_sync/core:raw_transfer_core",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/synchronization",
+        "@com_google_absl//absl/time",
+        "@com_google_googletest//:gtest_main",
+        "@xla//xla:future",
+    ],
+)
+
 # JAX test targets successfully relocated to api/jax/BUILD.
 
 cc_library(
