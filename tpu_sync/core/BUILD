@@ -382,6 +382,22 @@ cc_library(
     ],
 )
 
+cc_test(
+    name = "raw_transfer_core_poll_error_test",
+    srcs = ["raw_transfer_core_poll_error_test.cc"],
+    copts = [
+        "-fno-strict-aliasing",
+        "-fexceptions",
+    ],
+    features = ["-use_header_modules"],
+    deps = [
+        ":raw_transfer_core",
+        "@com_google_absl//absl/status",
+        "@com_google_googletest//:gtest_main",
+        "@xla//xla:future",
+    ],
+)
+
 cc_library(
     name = "raw_dma_pacer",
     srcs = ["raw_dma_pacer.cc"],
