@@ -766,6 +766,7 @@ void KVCacheManagerBase::WorkerLoop() {
     }
     auto future = std::move(task.work)();
     if (!future.ok()) {
+      LOG(ERROR) << "WorkerLoop: async dispatch failed: " << future.status();
       task.promise.Set(future.status());
     } else {
       // TODO(b/539581381): Research whether using PJRT_Event_OnReady in a

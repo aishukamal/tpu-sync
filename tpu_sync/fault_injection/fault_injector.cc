@@ -37,6 +37,7 @@
 #include "absl/base/no_destructor.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/log/absl_check.h"
+#include "absl/log/log.h"
 #include "absl/random/random.h"
 #include "absl/status/status.h"
 #include "absl/strings/ascii.h"
@@ -342,6 +343,7 @@ absl::Status FaultInjector::ExecuteStatus(std::string_view hook,
       << "injected status at " << hook << " must be an error";
   FaultInjectionAction action = EvaluateAndSleep(hook);
   if (action.type == FaultInjectionType::kFail) {
+    LOG(ERROR) << "FaultInjector: injected fault at " << hook;
     return absl::Status(code, absl::StrCat("injected fault at ", hook));
   }
   return absl::OkStatus();
