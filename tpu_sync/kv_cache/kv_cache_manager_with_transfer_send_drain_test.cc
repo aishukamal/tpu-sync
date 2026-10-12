@@ -98,9 +98,7 @@ class TestManager : public KVCacheManagerWithTransfer {
   }
 
   size_t free_slots() { return staging_allocator_->num_free_slots(); }
-  StagingBlockAllocator* staging_allocator() {
-    return staging_allocator_.get();
-  }
+  HostBlockArena* staging_allocator() { return staging_allocator_.get(); }
 
   // White-box construction for the send retirement state machine. Tests that
   // need registration and dispatch use NotifyForRead and ServePull instead.
@@ -205,9 +203,7 @@ class RecvTestManager : public KVCacheManagerWithTransfer {
   }
 
   size_t free_slots() { return staging_allocator_->num_free_slots(); }
-  StagingBlockAllocator* staging_allocator() {
-    return staging_allocator_.get();
-  }
+  HostBlockArena* staging_allocator() { return staging_allocator_.get(); }
 
   bool has_recv(uint64_t uuid) {
     absl::MutexLock lock(mu_);

@@ -53,6 +53,7 @@
 #include "tpu_sync/core/metrics_collector.h"
 #include "tpu_sync/core/raiden_transfer_endpoint.h"
 #include "tpu_sync/core/raw_transfer_core.h"
+#include "tpu_sync/core/staging_arena.h"
 #include "tpu_sync/fault_injection/fault_injector.h"
 #include "tpu_sync/kv_cache/kv_cache_manager_base.h"
 #include "tpu_sync/kv_cache/reshard_receive_session.h"
@@ -1048,7 +1049,7 @@ KVCacheManagerWithTransfer::CompleteReadRaw() {
           std::move(completions.failed)};
 }
 
-std::unique_ptr<StagingBlockAllocator> CreateStagingBlockAllocator(
+std::unique_ptr<HostBlockArena> CreateStagingBlockAllocator(
     kv_cache::KVCacheManagerBase* base, int64_t num_slots, int64_t max_blocks,
     std::optional<bool> dynamic_host_staging) {
   if (num_slots > 0 && max_blocks > 0) {
@@ -1058,13 +1059,19 @@ std::unique_ptr<StagingBlockAllocator> CreateStagingBlockAllocator(
       throw std::runtime_error(std::string(status.message()));
     }
   }
-  absl::StatusOr<std::unique_ptr<StagingBlockAllocator>> allocator =
-      StagingBlockAllocator::Create(base->host_block_manager(), num_slots,
-                                    max_blocks, dynamic_host_staging);
-  if (!allocator.ok()) {
-    throw std::runtime_error(std::string(allocator.status().message()));
+  const char* raw_env = std::getenv("TPU_RAIDEN_DYNAMIC_HOST_STAGING");
+  const bool use_dynamic_staging = dynamic_host_staging.value_or(
+      raw_env != nullptr && std::string(raw_env) == "1");
+  if (use_dynamic_staging) {
+    return std::make_unique<BlockArena>(base->host_block_manager(), num_slots,
+                                        max_blocks);
   }
-  return *std::move(allocator);
+  absl::StatusOr<std::unique_ptr<SlotArena>> arena =
+      SlotArena::Create(base->host_block_manager(), num_slots, max_blocks);
+  if (!arena.ok()) {
+    throw std::runtime_error(std::string(arena.status().message()));
+  }
+  return *std::move(arena);
 }
 
 void KVCacheManagerWithTransfer::RegisterBlockReadinessCallback(
