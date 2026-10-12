@@ -371,6 +371,7 @@ cc_library(
         ":xla_raw_transfer_headers",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_macros",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
@@ -378,6 +379,7 @@ cc_library(
         "@xla//xla/pjrt/c:pjrt_c_api_raw_buffer_external",
         "@xla//xla/tsl/concurrency:async_value",
         "//tpu_sync/common:trace",
+        "//tpu_sync/fault_injection:hooks",
         "//tpu_sync/transport:block_transport_delegate",
     ],
 )
