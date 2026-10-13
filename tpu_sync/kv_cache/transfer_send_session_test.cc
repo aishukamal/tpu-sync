@@ -39,6 +39,9 @@
 #include "tpu_sync/kv_cache/kv_cache_manager_base.h"
 #include "tpu_sync/kv_cache/kv_cache_manager_with_transfer.h"
 #include "tpu_sync/kv_cache/transfer_session.h"
+#include <cstdlib>
+#include "absl/strings/str_cat.h"
+#include "tpu_sync/transport/block_transport.h"
 
 namespace tpu_raiden {
 namespace {
@@ -144,6 +147,51 @@ class FakeSendBase : public kv_cache::KVCacheManagerBase {
   std::vector<std::function<void(absl::StatusOr<std::vector<int>>)>>
       h2h_callbacks_ ABSL_GUARDED_BY(mu_);
 };
+
+// Sets TPU_RAIDEN_DATA_CONN_REUSE for one test and restores it afterwards.
+class ScopedDataConnReuseEnv {
+ public:
+  explicit ScopedDataConnReuseEnv(const char* value) {
+    if (const char* prev = std::getenv(kName)) previous_ = prev;
+    setenv(kName, value, 1);
+  }
+  ~ScopedDataConnReuseEnv() {
+    if (previous_.has_value()) {
+      setenv(kName, previous_->c_str(), 1);
+    } else {
+      unsetenv(kName);
+    }
+  }
+
+ private:
+  static constexpr char kName[] = "TPU_RAIDEN_DATA_CONN_REUSE";
+  std::optional<std::string> previous_;
+};
+
+TEST(TransferSendSessionTest, PerTransferPolicyReleasesPeerConnectionsOnDone) {
+  ScopedDataConnReuseEnv env("per_transfer");
+  FakeSendBase base(/*num_layers=*/1, /*host_blocks=*/4);
+  ASSERT_NE(base.InitTransportServer(), nullptr);
+  std::unique_ptr<StagingBlockAllocator> allocator =
+      StagingBlockAllocator::Create(&base, /*num_slots=*/2, /*max_blocks=*/2);
+  const auto now = std::chrono::steady_clock::now();
+  std::shared_ptr<TransferSendSession> session = *TransferSendSession::Create(
+      &base, allocator.get(), "req_release", /*uuid=*/77, /*block_ids=*/{0},
+      /*deadline=*/now + std::chrono::seconds(10), /*register_start=*/now);
+  const std::string peer =
+      absl::StrCat("127.0.0.1:", base.transport_server()->local_port());
+
+  // The fake base completes the push inline, so the send settles inside
+  // StartPush: the done_ transition runs the release path, which must reach
+  // the transport without holding the session lock and leave no idle socket
+  // for the peer behind.
+  session->ValidateAndBeginPull({0}, now);
+  session->StartPush({peer}, /*src_block_ids=*/{0}, /*dst_block_ids=*/{0});
+  ABSL_EXPECT_OK(session->AwaitForDone());
+  EXPECT_TRUE(session->Done());
+  EXPECT_FALSE(session->HasStaging());
+  EXPECT_EQ(base.transport_server()->IdleConnectionCount(peer), 0u);
+}
 
 TEST(TransferSendSessionTest, SendSessionImplementsTransferSessionInterface) {
   FakeSendBase base(/*num_layers=*/1, /*host_blocks=*/4);

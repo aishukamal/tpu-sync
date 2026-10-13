@@ -41,6 +41,14 @@
 #include "absl/log/check.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+
+// Open-source abseil spells these ABSL_*; google3 provides the bare names.
+#ifndef ASSERT_OK
+#define ASSERT_OK(expression) ABSL_ASSERT_OK(expression)
+#endif
+#ifndef EXPECT_OK
+#define EXPECT_OK(expression) ABSL_EXPECT_OK(expression)
+#endif
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/synchronization/notification.h"
@@ -60,6 +68,8 @@
 #include "tpu_sync/transport/lib/chunk.h"
 #include "tpu_sync/transport/lib/chunk_serializer.h"
 #include "tpu_sync/transport/lib/conn/pool.h"
+
+#include <fcntl.h>  // NOLINT: F_GETFD liveness check in ConnPoolTest
 #include "tpu_sync/transport/lib/peregrine_control_service.h"
 #include "tpu_sync/transport/lib/raw_buffer_transport_delegate.h"
 #include "tpu_sync/transport/lib/socket/psp_syscall_mock.h" // NOLINT
@@ -681,6 +691,56 @@ TEST_P(ConnPoolTest, MultiIpPoolingIsolation) {
   pool.Return(/*ok=*/true, fd4, addr, "127.0.0.2");
 
   // Close the pool.
+  pool.Close();
+}
+
+TEST_P(ConnPoolTest, CloseIdleClosesOnlyThatPeersIdleConnections) {
+  RawMockDelegate src(1024);
+  RawBufferTransport listener_a(&src, 0);
+  RawBufferTransport listener_b(&src, 0);
+  auto channel_a = StartControlServer(&listener_a);
+  auto channel_b = StartControlServer(&listener_b);
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+  ConnPool pool;
+  const std::string peer_a = GetIpPort(listener_a);
+  const std::string peer_b = GetIpPort(listener_b);
+  const bool require_psp = absl::GetFlag(FLAGS_require_psp_tcp);
+
+  // Two idle connections to A under two local IPs (two pool keys that both
+  // end in "->A") and one to B.
+  const auto a1 = pool.Borrow(peer_a, "127.0.0.1", require_psp, channel_a);
+  ASSERT_OK(a1) << a1.status().message();
+  const auto a2 = pool.Borrow(peer_a, "127.0.0.2", require_psp, channel_a);
+  ASSERT_OK(a2) << a2.status().message();
+  const auto b1 = pool.Borrow(peer_b, "127.0.0.1", require_psp, channel_b);
+  ASSERT_OK(b1) << b1.status().message();
+  pool.Return(/*ok=*/true, *a1, peer_a, "127.0.0.1");
+  pool.Return(/*ok=*/true, *a2, peer_a, "127.0.0.2");
+  pool.Return(/*ok=*/true, *b1, peer_b, "127.0.0.1");
+  EXPECT_EQ(pool.IdleCount(peer_a), 2u);
+  EXPECT_EQ(pool.IdleCount(peer_b), 1u);
+
+  // A borrowed connection is not idle: it survives the close.
+  const auto a3 = pool.Borrow(peer_a, "127.0.0.1", require_psp, channel_a);
+  ASSERT_OK(a3) << a3.status().message();
+  EXPECT_EQ(*a3, *a1);
+  EXPECT_EQ(pool.IdleCount(peer_a), 1u);
+
+  EXPECT_EQ(pool.CloseIdle(peer_a), 1u);
+  EXPECT_EQ(pool.IdleCount(peer_a), 0u);
+  EXPECT_EQ(pool.IdleCount(peer_b), 1u);
+  EXPECT_GE(fcntl(*a3, F_GETFD), 0);
+  EXPECT_EQ(pool.CloseIdle(peer_a), 0u);
+
+  // The survivor pools again on return, and the next borrow reuses it.
+  pool.Return(/*ok=*/true, *a3, peer_a, "127.0.0.1");
+  EXPECT_EQ(pool.IdleCount(peer_a), 1u);
+  const auto a4 = pool.Borrow(peer_a, "127.0.0.1", require_psp, channel_a);
+  ASSERT_OK(a4) << a4.status().message();
+  EXPECT_EQ(*a4, *a3);
+  pool.Return(/*ok=*/true, *a4, peer_a, "127.0.0.1");
+
   pool.Close();
 }
 

@@ -98,7 +98,8 @@ class ReshardSendSession
                      std::string req_id, uint64_t uuid, int parallelism,
                      int remaining_pool_peer_pushes,
                      std::chrono::steady_clock::time_point deadline,
-                     ::tpu_sync::rpc::StartTransferRequest plan);
+                     ::tpu_sync::rpc::StartTransferRequest plan,
+                     std::vector<std::string> dst_peers);
 
   // Validates |plan| against |base| and |src_block_ids|.
   static absl::Status ValidatePlan(
@@ -114,6 +115,11 @@ class ReshardSendSession
   void EndOp();
   void SettleLocked() ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
   void ReleaseLeasesLocked() ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
+  // Under TPU_RAIDEN_DATA_CONN_REUSE=per_transfer, closes the sender's idle
+  // data connections to |dst_peers_| once the session has settled (every
+  // push completed, every stream's socket back in the pool). Called right
+  // after SettleLocked, outside |mu_|.
+  void ReleasePeerConnections();
 
   kv_cache::KVCacheManagerBase* const base_ = nullptr;
   StagingBlockAllocator* const staging_allocator_ = nullptr;
@@ -122,6 +128,8 @@ class ReshardSendSession
   const int parallelism_ = 8;
   const std::chrono::steady_clock::time_point deadline_;
   const ::tpu_sync::rpc::StartTransferRequest plan_;
+  // Data endpoints the sender schedule pushes to.
+  const std::vector<std::string> dst_peers_;
 
   mutable absl::Mutex mu_;
   int remaining_pool_peer_pushes_ ABSL_GUARDED_BY(mu_) = 0;

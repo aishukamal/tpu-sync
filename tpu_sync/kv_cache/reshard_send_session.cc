@@ -40,6 +40,7 @@
 #include "tpu_sync/core/pool_reshard_send_slots.h"
 #include "tpu_sync/core/raw_transfer_core.h"
 #include "tpu_sync/core/utils.h"
+#include "tpu_sync/kv_cache/data_connection_policy.h"
 #include "tpu_sync/kv_cache/kv_cache_manager_base.h"
 #include "tpu_sync/kv_cache/kv_cache_manager_with_transfer.h"
 #include "tpu_sync/kv_cache/pool_layout.h"
@@ -142,7 +143,8 @@ absl::StatusOr<std::shared_ptr<ReshardSendSession>> ReshardSendSession::Create(
   const uint64_t uuid = plan.uuid();
   return std::shared_ptr<ReshardSendSession>(new ReshardSendSession(
       base, staging_allocator, std::move(req_id), uuid, parallelism,
-      remaining_pool_peer_pushes, deadline, std::move(plan)));
+      remaining_pool_peer_pushes, deadline, std::move(plan),
+      std::vector<std::string>(peers.begin(), peers.end())));
 }
 
 ReshardSendSession::ReshardSendSession(
@@ -150,7 +152,8 @@ ReshardSendSession::ReshardSendSession(
     StagingBlockAllocator* staging_allocator, std::string req_id, uint64_t uuid,
     int parallelism, int remaining_pool_peer_pushes,
     std::chrono::steady_clock::time_point deadline,
-    ::tpu_sync::rpc::StartTransferRequest plan)
+    ::tpu_sync::rpc::StartTransferRequest plan,
+    std::vector<std::string> dst_peers)
     : base_(base),
       staging_allocator_(staging_allocator),
       req_id_(std::move(req_id)),
@@ -158,6 +161,7 @@ ReshardSendSession::ReshardSendSession(
       parallelism_(parallelism),
       deadline_(deadline),
       plan_(std::move(plan)),
+      dst_peers_(std::move(dst_peers)),
       remaining_pool_peer_pushes_(remaining_pool_peer_pushes) {}
 
 ReshardSendSession::~ReshardSendSession() {
@@ -382,15 +386,20 @@ void ReshardSendSession::RecordPushCompletion(
 }
 
 void ReshardSendSession::Finish(const absl::Status& status) {
-  absl::MutexLock lock(mu_);
-  if (!status.ok() && status_.ok()) {
-    status_ = status;
+  bool settled = false;
+  {
+    absl::MutexLock lock(mu_);
+    if (!status.ok() && status_.ok()) {
+      status_ = status;
+    }
+    if (done_ || finalizing_) return;
+    finalizing_ = true;
+    if (in_flight_ == 0) {
+      SettleLocked();
+      settled = true;
+    }
   }
-  if (done_ || finalizing_) return;
-  finalizing_ = true;
-  if (in_flight_ == 0) {
-    SettleLocked();
-  }
+  if (settled) ReleasePeerConnections();
 }
 
 absl::Status ReshardSendSession::AwaitForDone() {
@@ -422,11 +431,16 @@ void ReshardSendSession::EndOp() {
                  << " on settle: " << unregister;
     }
   }
-  absl::MutexLock lock(mu_);
-  --in_flight_;
-  if (finalizing_ && in_flight_ == 0 && !done_) {
-    SettleLocked();
+  bool settled = false;
+  {
+    absl::MutexLock lock(mu_);
+    --in_flight_;
+    if (finalizing_ && in_flight_ == 0 && !done_) {
+      SettleLocked();
+      settled = true;
+    }
   }
+  if (settled) ReleasePeerConnections();
 }
 
 void ReshardSendSession::ReleaseLeasesLocked() {
@@ -440,6 +454,17 @@ void ReshardSendSession::SettleLocked() {
   // host staging arena slots and mark done atomically under |mu_|.
   ReleaseLeasesLocked();
   done_ = true;
+}
+
+void ReshardSendSession::ReleasePeerConnections() {
+  // A send that never executed pushed nothing; a manager that is tearing down
+  // closes its transport itself.
+  {
+    absl::MutexLock lock(mu_);
+    if (manager_ == nullptr || manager_->IsShuttingDown()) return;
+  }
+  ReleaseDataConnectionsAfterSend(base_->transport_server(), dst_peers_,
+                                  uuid_);
 }
 
 }  // namespace tpu_raiden

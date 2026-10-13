@@ -165,6 +165,11 @@ class TransferSendSession
   void EndSendOpLocked() ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
   absl::Status AcquireStagingWithRetry(int64_t num_blocks);
   void SendNextLayer(size_t l);
+  // Under TPU_RAIDEN_DATA_CONN_REUSE=per_transfer, closes the sender's idle
+  // data connections to |peers| (the endpoints this send pushed to) once the
+  // send is done. Called outside |mu_| by the public wrappers that observe
+  // the done_ transition.
+  void ReleasePeerConnections(absl::Span<const std::string> peers);
 
   mutable absl::Mutex mu_;
   kv_cache::KVCacheManagerBase* const base_ = nullptr;

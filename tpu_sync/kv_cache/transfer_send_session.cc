@@ -38,6 +38,7 @@
 #include "tpu_sync/common/trace.h"
 #include "tpu_sync/core/raw_transfer_core.h"
 #include "tpu_sync/fault_injection/fault_injector.h"
+#include "tpu_sync/kv_cache/data_connection_policy.h"
 #include "tpu_sync/kv_cache/kv_cache_manager_base.h"
 #include "tpu_sync/kv_cache/kv_cache_manager_with_transfer.h"
 #include "tpu_sync/transport/block_transport_delegate.h"
@@ -176,8 +177,14 @@ void TransferSendSession::FinishLocked(const absl::Status& status) {
 }
 
 void TransferSendSession::Finish(const absl::Status& status) {
-  absl::MutexLock lock(mu_);
-  FinishLocked(status);
+  std::vector<std::string> settled_peers;
+  {
+    absl::MutexLock lock(mu_);
+    const bool was_done = done_;
+    FinishLocked(status);
+    if (done_ && !was_done) settled_peers = remote_data_endpoints_;
+  }
+  ReleasePeerConnections(settled_peers);
 }
 
 absl::Status TransferSendSession::AwaitForDone() {
@@ -196,8 +203,22 @@ void TransferSendSession::EndSendOpLocked() {
 }
 
 void TransferSendSession::EndSendOp() {
-  absl::MutexLock lock(mu_);
-  EndSendOpLocked();
+  std::vector<std::string> settled_peers;
+  {
+    absl::MutexLock lock(mu_);
+    const bool was_done = done_;
+    EndSendOpLocked();
+    if (done_ && !was_done) settled_peers = remote_data_endpoints_;
+  }
+  ReleasePeerConnections(settled_peers);
+}
+
+void TransferSendSession::ReleasePeerConnections(
+    absl::Span<const std::string> peers) {
+  // Runs after done_ was set, outside |mu_|: every push has completed and
+  // returned its socket to the pool. A send that pushed nothing has no peers.
+  if (peers.empty()) return;
+  ReleaseDataConnectionsAfterSend(base_->transport_server(), peers, uuid_);
 }
 
 CopySpec TransferSendSession::BuildCoalescedCopySpec(
