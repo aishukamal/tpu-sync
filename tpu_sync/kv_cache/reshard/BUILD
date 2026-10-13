@@ -104,6 +104,7 @@ cc_library(
         "//tpu_sync/rpc:raiden_service_cc_proto",
         "@com_google_absl//absl/container:btree",
         "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
@@ -182,6 +183,18 @@ cc_binary(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/time",
+    ],
+)
+
+cc_test(
+    name = "pool_reshard_planner_streams_test",
+    size = "small",
+    srcs = ["pool_reshard_planner_streams_test.cc"],
+    copts = RESHARD_COPTS,
+    features = ["-use_header_modules"],
+    deps = [
+        ":pool_reshard_planner",
+        "@com_google_googletest//:gtest_main",
     ],
 )
 

@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <map>
 #include <set>
 #include <string>
@@ -32,7 +33,9 @@
 #include "absl/container/btree_set.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
+#include "absl/log/log.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/numbers.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 #include "tpu_sync/common/raiden_id.h"
@@ -569,6 +572,26 @@ absl::Status EmitSpanSchedule(
 
 }  // namespace
 
+int64_t DefaultTransferStreams(int64_t topology_parallelism) {
+  const char* raw = std::getenv(kTransferStreamsEnvVar);
+  if (raw == nullptr || raw[0] == '\0') return topology_parallelism;
+  int64_t streams = 0;
+  if (!absl::SimpleAtoi(raw, &streams) || streams < 0) {
+    LOG_FIRST_N(WARNING, 1) << kTransferStreamsEnvVar << "=\"" << raw
+                            << "\" is not a non-negative integer; using one "
+                               "stream per source rank";
+    return topology_parallelism;
+  }
+  if (streams == 0) return topology_parallelism;
+  if (streams > topology_parallelism) {
+    LOG_FIRST_N(WARNING, 1) << kTransferStreamsEnvVar << "=" << streams
+                            << " exceeds the admitted transfer parallelism "
+                            << topology_parallelism << "; clamping";
+    return topology_parallelism;
+  }
+  return streams;
+}
+
 absl::StatusOr<PoolReshardPlan> BuildPoolReshardPlan(
     const PlanRequest& request, RequestBlockRegistry* registry,
     const void* claim_owner) {
@@ -885,7 +908,7 @@ absl::StatusOr<PoolReshardPlan> BuildPoolReshardPlan(
   const int64_t requested_parallelism =
       request.parallelism.has_value()
           ? static_cast<int64_t>(*request.parallelism)
-          : topology_parallelism;
+          : DefaultTransferStreams(topology_parallelism);
   if (requested_parallelism <= 0) {
     return absl::InvalidArgumentError("parallelism must be positive");
   }

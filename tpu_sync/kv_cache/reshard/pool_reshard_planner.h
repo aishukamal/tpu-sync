@@ -16,6 +16,7 @@
 #define THIRD_PARTY_TPU_RAIDEN_KV_CACHE_RESHARD_POOL_RESHARD_PLANNER_H_
 
 #include <cstdint>
+#include <optional>
 #include <map>
 #include <optional>
 #include <string>
@@ -137,6 +138,18 @@ struct PlanRequest {
 // snapshot through `registry` under `claim_owner`, binds, and emits.
 // Failure does NOT roll back the claim — the caller abandons it
 // (_build_pool_reshard_plan's contract).
+// Environment variable that caps the TCP streams each sender opens per
+// (pool, peer) push when the consumer did not request a stream count:
+// positive integer, clamped to the admitted transfer parallelism (the source
+// rank count). Unset or 0 keeps the historical default, one stream per source
+// rank. Read on the store that plans the transfer; both the senders and the
+// receiver take the value from the plan, so push accounting stays consistent.
+inline constexpr char kTransferStreamsEnvVar[] = "TPU_RAIDEN_TRANSFER_STREAMS";
+
+// Stream count a plan uses when the request leaves it unspecified: the env cap
+// above when set, otherwise `topology_parallelism`.
+int64_t DefaultTransferStreams(int64_t topology_parallelism);
+
 absl::StatusOr<PoolReshardPlan> BuildPoolReshardPlan(
     const PlanRequest& request, RequestBlockRegistry* registry,
     const void* claim_owner);
