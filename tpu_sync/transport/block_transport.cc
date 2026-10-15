@@ -65,6 +65,8 @@
 #include "tpu_sync/transport/lib/socket/util.h"
 #include "tpu_sync/transport/lib/socket_transport_adapter.h"
 #include "tpu_sync/transport/lib/transport_adapter.h"
+#include "tpu_sync/host_leader/adapter.h"
+#include "tpu_sync/host_leader/allocator.h"
 
 namespace tpu_raiden {
 namespace transport {
@@ -238,8 +240,15 @@ BlockTransport::BlockTransport(BlockTransportDelegate* delegate, int local_port,
           GetCoalesceWindowBytes()),
       peregrine_control_(
           std::make_unique<lib::PeregrineControlServiceImpl>(&raw_transport_)),
-      transport_adapter_(std::make_unique<lib::SocketTransportAdapter>(
-          &raw_transport_, parallelism_)) {
+      transport_adapter_(
+          host_leader::SocketPath().empty()
+              ? std::unique_ptr<lib::TransportAdapter>(
+                    std::make_unique<lib::SocketTransportAdapter>(
+                        &raw_transport_, parallelism_))
+              : std::unique_ptr<lib::TransportAdapter>(
+                    std::make_unique<host_leader::Adapter>(
+                        delegate, raw_transport_.local_port(),
+                        raw_transport_.local_ips()))) {
   LOG(INFO) << "local_port=" << local_port
             << ", local_ips=" << absl::StrJoin(local_ips, ",")
             << ", parallelism=" << parallelism_;
@@ -1147,6 +1156,9 @@ BlockTransport::BuildBlockPullRequests(
 }
 
 void BlockTransport::ForgetPushProgress(uint64_t uuid) {
+  if (!host_leader::SocketPath().empty()) {
+    static_cast<host_leader::Adapter*>(transport_adapter_.get())->Forget(uuid);
+  }
   raw_transport_.ForgetPushProgress(uuid);
   absl::MutexLock lock(progress_mu_);
   for (auto it = layer_progress_.begin(); it != layer_progress_.end();) {

@@ -116,7 +116,7 @@ absl::Status ConnectWithTimeout(int fd, const addrinfo& addr,
 absl::StatusOr<int> ConnectToPeer(absl::string_view peer,
                                   absl::string_view local_ip, bool require_psp,
                                   std::shared_ptr<grpc::Channel> channel,
-                                  ConnectTiming* timing) {
+                                  ConnectTiming* timing, bool strict_source_bind) {
   if (require_psp && channel == nullptr) {
     return absl::InvalidArgumentError(
         "gRPC channel is required for PSP connection");
@@ -187,6 +187,7 @@ absl::StatusOr<int> ConnectToPeer(absl::string_view peer,
         sock_fd = -1;
         continue;
       }
+      bool source_bound = false;
       std::string local_ip_str(local_ip);
       bool is_ipv6 = absl::StrContains(local_ip, ':');
       if (is_ipv6 && rp->ai_family == AF_INET6) {
@@ -200,6 +201,8 @@ absl::StatusOr<int> ConnectToPeer(absl::string_view peer,
               0) {
             LOG(WARNING) << "Client bind IPv6 failed to " << local_ip << ": "
                          << std::strerror(errno);
+          } else {
+            source_bound = true;
           }
         }
       } else if (!is_ipv6 && rp->ai_family == AF_INET) {
@@ -213,8 +216,17 @@ absl::StatusOr<int> ConnectToPeer(absl::string_view peer,
               0) {
             LOG(WARNING) << "Client bind IPv4 failed to " << local_ip << ": "
                          << std::strerror(errno);
+          } else {
+            source_bound = true;
           }
         }
+      }
+      if (strict_source_bind && !source_bound) {
+        last_status = absl::InvalidArgumentError(
+            absl::StrCat("strict source bind failed for ", local_ip));
+        close(sock_fd);
+        sock_fd = -1;
+        continue;
       }
     }
 

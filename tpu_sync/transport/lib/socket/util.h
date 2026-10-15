@@ -35,7 +35,7 @@ struct ConnectTiming {
 absl::StatusOr<int> ConnectToPeer(
     absl::string_view peer, absl::string_view local_ip = "",
     bool require_psp = false, std::shared_ptr<grpc::Channel> channel = nullptr,
-    ConnectTiming* timing = nullptr);
+    ConnectTiming* timing = nullptr, bool strict_source_bind = false);
 
 // Returns the local endpoint ("ip:port") for the socket `fd`.
 std::string GetLocalEndpoint(int fd);

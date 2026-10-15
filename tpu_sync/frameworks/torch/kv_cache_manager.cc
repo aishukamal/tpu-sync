@@ -44,6 +44,7 @@
 #include "tpu_sync/frameworks/torch/torch_utils.h"
 #include "tpu_sync/kv_cache/kv_cache_listener.h"
 #include "tpu_sync/transport/block_transport.h"
+#include "tpu_sync/host_leader/allocator.h"
 
 namespace tpu_raiden {
 namespace torch {
@@ -66,6 +67,20 @@ std::string FormatAddressWithPort(absl::string_view ip, int port) {
     return absl::StrCat("[", ip, "]:", port);
   }
   return absl::StrCat(ip, ":", port);
+}
+
+HostBufferAllocator TransferHostAllocator(xla::PjRtClient* client,
+                                          bool enable_shm, int64_t num_blocks,
+                                          size_t payload_bytes) {
+  if (!host_leader::SocketPath().empty()) {
+    if (enable_shm) {
+      throw std::invalid_argument(
+          "host leader transfer staging cannot use persistent recovery SHM");
+    }
+    return host_leader::MakeAllocator(client);
+  }
+  return CreateHostMemoryAllocator(client, enable_shm, num_blocks,
+                                   payload_bytes);
 }
 
 }  // namespace
@@ -147,7 +162,7 @@ TorchKVCacheManager::TorchKVCacheManager(
           parallelism,
           // The same resolution the KVCacheManagerWithTransfer base applies,
           // so the segment identity records the pool size actually allocated.
-          CreateHostMemoryAllocator(
+          TransferHostAllocator(
               unpacked.client, enable_shm,
               host_blocks_to_allocate.has_value()
                   ? static_cast<int64_t>(*host_blocks_to_allocate)

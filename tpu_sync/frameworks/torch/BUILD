@@ -175,6 +175,7 @@ cc_library(
     linkopts = ["-Wl,--allow-shlib-undefined"],
     visibility = ["//visibility:public"],
     deps = [
+        "//tpu_sync/host_leader:allocator",
         ":torch_utils",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",

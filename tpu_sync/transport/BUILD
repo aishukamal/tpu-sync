@@ -50,6 +50,8 @@ cc_library(
     deps = [
         ":block_transport_delegate",
         ":buffer_push_task",
+        "//tpu_sync/host_leader:adapter",
+        "//tpu_sync/host_leader:allocator",
         "//tpu_sync/core:tsl_platform_headers",
         "//tpu_sync/fault_injection:hooks",
         "//tpu_sync/telemetry:label_util",
