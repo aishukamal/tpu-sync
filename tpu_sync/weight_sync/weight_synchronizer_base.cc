@@ -1640,6 +1640,14 @@ absl::Status WeightSynchronizerBase::BindWeights(
       }
     }
   }
+  // Every layer places shard `i` on the same device, so layer 0 tells where
+  // each shard lives; devices that do not publish a NUMA node are skipped.
+  for (size_t shard_idx = 0; shard_idx < num_shards_; ++shard_idx) {
+    const int node = GetPjRtDeviceNumaNode(layer_buffers[0][shard_idx].device);
+    if (node >= 0) {
+      ABSL_RETURN_IF_ERROR(SetShardNumaNode(shard_idx, node));
+    }
+  }
 
   xla::PjRtClient* client = nullptr;
   if (!layer_buffers.empty() && !layer_buffers[0].empty()) {

@@ -116,9 +116,18 @@ class BlockTransportDelegate : public lib::RawBufferTransportDelegate {
   // Placement of each local shard, in `local_index` order, with
   // `size() == num_shards()` when known. Descriptive only (NIC selection,
   // endpoint advertisement); it never changes how the wire addresses shards.
+  // Returned by value because a delegate may record a shard's NUMA node after
+  // construction (e.g. once its device is bound) while other threads read it.
   // The default reports nothing, so callers must fall back to `num_shards()`
   // with unknown global index and NUMA node.
-  virtual absl::Span<const ShardInfo> shards() const { return {}; }
+  virtual std::vector<ShardInfo> GetShardsSnapshot() const { return {}; }
+
+  // Distinct NUMA nodes (>= 0) that the local shards may occupy over the
+  // delegate's lifetime, including shards whose placement is not known yet.
+  // BlockTransport reads it once at construction, together with
+  // GetShardsSnapshot(), to create its per-NUMA send adapters. The default
+  // reports nothing.
+  virtual std::vector<int> target_numa_nodes() const { return {}; }
 
   // Returns the list of contiguous chunks that constitute a block range
   // for a specific transaction (identified by uuid).

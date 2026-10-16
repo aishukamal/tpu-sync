@@ -65,10 +65,11 @@ class BlockTransport final {
   // Constructor sets up a TCP listening socket on the given `local_port`. It
   // starts #`parallelism` worker threads to handle incoming `WriteTask`s.
   //
-  // When the delegate's shards (`delegate->shards()`) span more than one NUMA
-  // node, push streams whose shards live on node N are sent by worker threads
-  // pinned to N (see lib::SocketTransportAdapter). Otherwise every stream
-  // uses the default (unpinned) send path exactly as before.
+  // When the delegate's shards (`delegate->GetShardsSnapshot()` together with
+  // `delegate->target_numa_nodes()`) span more than one NUMA node, push streams
+  // whose shards live on node N are sent by worker threads pinned to N (see
+  // lib::SocketTransportAdapter). Otherwise every stream uses the default
+  // (unpinned) send path exactly as before.
   BlockTransport(BlockTransportDelegate* delegate, int local_port,
                  const std::vector<std::string>& local_ips = {},
                  int parallelism = 1);
@@ -129,12 +130,12 @@ class BlockTransport final {
   //
   // The blocks are split evenly into `parallelism` streams and stream `i`
   // goes to `peers[i % n]`. When the delegate reports shards on more than one
-  // NUMA node (`shards()`), the push is additionally split by NUMA node: each
-  // node gets its own `parallelism` streams carrying only that node's shards
-  // (`ChunkHeader::buffer_id` = shard mask), sent from the node's local NICs by
-  // threads pinned to it. This requires explicit `dst_block_ids` (op 6) and at
-  // most kMaxShardMaskBits shards; otherwise, and whenever every shard is on
-  // one node, the legacy single-group layout is used unchanged.
+  // NUMA node (`GetShardsSnapshot()`), the push is additionally split by NUMA
+  // node: each node gets its own `parallelism` streams carrying only that
+  // node's shards (`ChunkHeader::buffer_id` = shard mask), sent from the node's
+  // local NICs by threads pinned to it. This requires explicit `dst_block_ids`
+  // (op 6) and at most kMaxShardMaskBits shards; otherwise, and whenever every
+  // shard is on one node, the legacy single-group layout is used unchanged.
   //
   // Returns a future that resolves with the destination block ids once every
   // peer has acknowledged, or with the first error. Callers that need a

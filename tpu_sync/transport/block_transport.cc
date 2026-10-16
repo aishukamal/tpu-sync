@@ -422,14 +422,21 @@ BlockTransport::BlockTransport(BlockTransportDelegate* delegate, int local_port,
           std::make_unique<lib::PeregrineControlServiceImpl>(&raw_transport_)),
       transport_adapter_(std::make_unique<lib::SocketTransportAdapter>(
           &raw_transport_, parallelism_)) {
-  // Pin a send adapter to each NUMA node the local shards span, but only when
-  // they span more than one: that is the only case where pushes are split by
-  // source node. Single-node managers keep the legacy send path untouched.
+  // Pin a send adapter to each NUMA node the local shards span, or will span
+  // once placed (`target_numa_nodes()`), but only when they span more than
+  // one: that is the only case where pushes are split by source node.
+  // Single-node managers keep the legacy send path untouched. The adapters are
+  // fixed here; later placement updates only regroup pushes among them.
   std::vector<int> send_numa_nodes;
-  for (const ShardInfo& shard : block_delegate_->shards()) {
+  for (const ShardInfo& shard : block_delegate_->GetShardsSnapshot()) {
     if (shard.numa_node >= 0 &&
         !absl::c_linear_search(send_numa_nodes, shard.numa_node)) {
       send_numa_nodes.push_back(shard.numa_node);
+    }
+  }
+  for (const int node : block_delegate_->target_numa_nodes()) {
+    if (node >= 0 && !absl::c_linear_search(send_numa_nodes, node)) {
+      send_numa_nodes.push_back(node);
     }
   }
   if (send_numa_nodes.size() > 1) {
@@ -968,7 +975,7 @@ tsl::Future<std::vector<int>> BlockTransport::AsyncPush(
   // back to one legacy group.
   const size_t num_shards = block_delegate_->num_shards();
   std::vector<ShardGroup> groups =
-      ShardGroupsByNuma(block_delegate_->shards(), num_shards);
+      ShardGroupsByNuma(block_delegate_->GetShardsSnapshot(), num_shards);
   if (groups.size() > 1 && dst_block_ids.empty()) {
     LOG_FIRST_N(WARNING, 1)
         << "Push without explicit destination block ids cannot be split by "

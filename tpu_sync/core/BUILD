@@ -860,6 +860,8 @@ cc_test(
         ":tpu_pjrt_manager",
         ":tpu_utils",
         "//tpu_sync/transport:block_transport_delegate",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/time",

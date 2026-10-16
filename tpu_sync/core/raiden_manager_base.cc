@@ -82,10 +82,26 @@ RaidenManagerBase::RaidenManagerBase(
       }
     }
   }
+  for (const int node : numa_nodes) {
+    if (node >= 0 && !absl::c_linear_search(numa_nodes_, node)) {
+      numa_nodes_.push_back(node);
+    }
+  }
+  // Several candidate nodes and no per-shard placement: attributing every
+  // shard to the first node would misplace the others, so the shards stay
+  // unknown until SetShardNumaNode() records each one.
+  const bool defer_shard_placement =
+      !has_shard_placement && numa_nodes_.size() > 1;
   if (!numa_nodes.empty()) {
     assigned_numa_node_ = numa_nodes[0];
     if (numa_nodes.size() > 1) {
-      if (!has_shard_placement) {
+      if (defer_shard_placement) {
+        LOG(INFO) << "Incoming PJRT buffers span NUMA nodes ["
+                  << absl::StrJoin(numa_nodes_, ",")
+                  << "] and no per-shard placement was supplied; shard NUMA "
+                     "nodes stay unknown until SetShardNumaNode() records "
+                     "them.";
+      } else if (!has_shard_placement) {
         LOG(WARNING) << "Incoming PJRT buffers are associated with more than "
                         "one NUMA node ("
                      << numa_nodes[0] << " vs " << numa_nodes[1]
@@ -105,9 +121,9 @@ RaidenManagerBase::RaidenManagerBase(
       }
     }
   }
-  if (!has_shard_placement) {
-    // No placement supplied: every shard sits on the assigned node (or is
-    // unknown) with an unknown global index.
+  if (!has_shard_placement && !defer_shard_placement) {
+    // No placement supplied and at most one candidate node: every shard sits
+    // on the assigned node (or is unknown) with an unknown global index.
     for (size_t sh = 0; sh < num_shards_; ++sh) {
       shards_[sh].numa_node = assigned_numa_node_.value_or(-1);
     }
@@ -195,13 +211,20 @@ tpu_raiden::transport::BlockTransport* RaidenManagerBase::InitTransportServer(
     }
 
     if (!host_nics.empty()) {
-      // NUMA nodes to serve, in first-seen shard order. Without a per-shard
-      // map this degenerates to the single assigned node.
+      // NUMA nodes to serve, in first-seen shard order, then every node the
+      // shards may occupy once placed, so `local_ips_` is final even when the
+      // placement arrives after construction. Without either this degenerates
+      // to the single assigned node.
       std::vector<int> target_numas;
-      for (const transport::ShardInfo& shard : shards_) {
+      for (const transport::ShardInfo& shard : GetShardsSnapshot()) {
         if (shard.numa_node >= 0 &&
             !absl::c_linear_search(target_numas, shard.numa_node)) {
           target_numas.push_back(shard.numa_node);
+        }
+      }
+      for (const int node : numa_nodes_) {
+        if (!absl::c_linear_search(target_numas, node)) {
+          target_numas.push_back(node);
         }
       }
       if (target_numas.empty() && assigned_numa_node_.has_value() &&
@@ -270,7 +293,30 @@ std::vector<std::string> RaidenManagerBase::local_ips() const {
   return local_ips_;
 }
 
+std::vector<transport::ShardInfo> RaidenManagerBase::GetShardsSnapshot() const {
+  absl::MutexLock lock(shards_mu_);
+  return shards_;
+}
+
+absl::Status RaidenManagerBase::SetShardNumaNode(size_t shard_idx,
+                                                 int numa_node) {
+  if (numa_node < 0) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("SetShardNumaNode: NUMA node for shard ", shard_idx,
+                     " must be non-negative, got ", numa_node));
+  }
+  absl::MutexLock lock(shards_mu_);
+  if (shard_idx >= shards_.size()) {
+    return absl::OutOfRangeError(absl::StrCat(
+        "SetShardNumaNode: shard ", shard_idx,
+        " is out of range; this manager has ", shards_.size(), " shards"));
+  }
+  shards_[shard_idx].numa_node = numa_node;
+  return absl::OkStatus();
+}
+
 std::optional<int> RaidenManagerBase::shard_numa_node(size_t shard_idx) const {
+  absl::MutexLock lock(shards_mu_);
   if (shard_idx < shards_.size()) {
     const int node = shards_[shard_idx].numa_node;
     if (node >= 0) return node;

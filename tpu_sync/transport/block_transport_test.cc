@@ -34,10 +34,12 @@
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "absl/base/log_severity.h"
 #include "absl/base/thread_annotations.h"
 #include "absl/cleanup/cleanup.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/flags/flag.h"
+#include "absl/log/scoped_mock_log.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
@@ -683,7 +685,7 @@ class TwoNumaSenderDelegate : public MockDelegate {
  public:
   using MockDelegate::MockDelegate;
 
-  absl::Span<const ShardInfo> shards() const override { return shards_; }
+  std::vector<ShardInfo> GetShardsSnapshot() const override { return shards_; }
 
  private:
   const std::vector<ShardInfo> shards_ = {
@@ -812,6 +814,73 @@ TEST_P(BlockTransportTest, PushSplitBySourceNumaCompletesPlanDeclaredPool) {
           .Await();
   ASSERT_TRUE(pushed.ok()) << pushed.status().message();
   EXPECT_EQ(receiver_delegate.pool_completion_count(), 1);
+}
+
+// Sender delegate whose shards are unplaced when the transport is built but
+// will land on NUMA nodes {0, 1}; PlaceShards() later publishes {0, 0, 1, 1}.
+class LateNumaPlacementSenderDelegate : public MockDelegate {
+ public:
+  using MockDelegate::MockDelegate;
+
+  std::vector<ShardInfo> GetShardsSnapshot() const override {
+    absl::MutexLock lock(shards_mu_);
+    return shards_;
+  }
+  std::vector<int> target_numa_nodes() const override { return {0, 1}; }
+
+  void PlaceShards() {
+    absl::MutexLock lock(shards_mu_);
+    for (ShardInfo& shard : shards_) shard.numa_node = shard.local_index / 2;
+  }
+
+ private:
+  mutable absl::Mutex shards_mu_;
+  std::vector<ShardInfo> shards_ ABSL_GUARDED_BY(shards_mu_) = {
+      {.local_index = 0},
+      {.local_index = 1},
+      {.local_index = 2},
+      {.local_index = 3},
+  };
+};
+
+TEST_P(BlockTransportTest, TargetNumaNodesCreateAdaptersBeforePlacement) {
+  constexpr size_t kSlice = 256;
+  constexpr int kBlocks = 4;
+  constexpr size_t kShards = 4;
+  LateNumaPlacementSenderDelegate sender_delegate(kSlice, kBlocks,
+                                                  /*num_layers=*/1, kShards);
+  BlockShardsReceivedRecordingDelegate receiver_delegate(
+      kSlice, kBlocks, /*num_layers=*/1, kShards);
+
+  // No shard is placed yet, but target_numa_nodes() spans two nodes, so one
+  // pinned send adapter per node is created at construction.
+  absl::ScopedMockLog log(absl::MockLogDefault::kIgnoreUnexpected);
+  EXPECT_CALL(log, Log(absl::LogSeverity::kInfo, ::testing::_,
+                       ::testing::HasSubstr("numa_send_adapters=2")));
+  log.StartCapturingLogs();
+  BlockTransport sender(&sender_delegate, 0, /*local_ips=*/{"127.0.0.1"},
+                        /*parallelism=*/1);
+  log.StopCapturingLogs();
+  BlockTransport receiver(&receiver_delegate, 0);
+  BindControlChannels(&sender, &sender_delegate, &receiver, &receiver_delegate);
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+  // A placement published after construction splits the next push.
+  sender_delegate.PlaceShards();
+  absl::StatusOr<std::vector<int>> pushed =
+      sender
+          .AsyncPush({absl::StrCat("localhost:", receiver.local_port())},
+                     /*src_block_ids=*/{0}, /*dst_block_ids=*/{1},
+                     /*parallelism=*/1, MajorOrder::kLayerMajor, /*uuid=*/11,
+                     /*layer_idx=*/-1)
+          .Await();
+  ABSL_ASSERT_OK(pushed);
+  EXPECT_THAT(receiver_delegate.reports(),
+              ::testing::UnorderedElementsAre(
+                  ::testing::Pair(::testing::ElementsAre(1),
+                                  ::testing::ElementsAre(0, 1)),
+                  ::testing::Pair(::testing::ElementsAre(1),
+                                  ::testing::ElementsAre(2, 3))));
 }
 
 TEST_P(BlockTransportTest, PullNonContiguous) {
