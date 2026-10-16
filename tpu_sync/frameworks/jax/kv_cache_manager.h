@@ -323,6 +323,9 @@ class KVCacheManager {
       bool enable_shm = false);
 #endif
 
+  // TODO(justinlu): Convert the remaining constructors to factory methods, make
+  // the constructors private, and avoid try/catch/throw statements in favor of
+  // absl::Status/absl::StatusOr error propagation.
   // Raw PjRtBuffer constructor
   KVCacheManager(
       const std::vector<std::vector<xla::PjRtBuffer*>>& device_buffers,
@@ -333,11 +336,11 @@ class KVCacheManager {
       std::optional<std::string> raiden_controller_address = std::nullopt,
       std::optional<std::string> worker_id = std::nullopt, int64_t node_id = 0);
 
-  // Raw PjRtBuffer transfer-enabled constructor (control server + host
-  // staging slots, see the NumaAwareKVCacheManager counterpart). Starts the
-  // worker gRPC server when |raiden_controller_address| is set, as the other
-  // constructors do.
-  KVCacheManager(
+  // Creates a transfer-enabled manager over raw PjRtBuffer pointers in
+  // |device_buffers| ([layer][device], control server + host staging slots;
+  // see the NumaAwareKVCacheManager counterpart). Starts the worker gRPC
+  // server when |raiden_controller_address| is set.
+  static absl::StatusOr<std::unique_ptr<KVCacheManager>> CreateFromPjRtBuffers(
       const std::vector<std::vector<xla::PjRtBuffer*>>& device_buffers,
       int64_t node_id, int64_t local_control_port, int64_t max_blocks,
       int64_t num_slots, double timeout_s, bool unsafe_skip_buffer_lock,
@@ -556,12 +559,11 @@ class KVCacheManager {
   }
 
  private:
-#ifndef WITHOUT_PYTHON
-  // Used by Create(); adopts an already constructed |numa_manager|. The gRPC
-  // server is started separately by the factory.
+  // Used by Create(), CreateWithNodeId(), and CreateFromPjRtBuffers(); adopts
+  // an already constructed |numa_manager|. The gRPC server is started
+  // separately by the factory.
   explicit KVCacheManager(
       std::unique_ptr<NumaAwareKVCacheManager> numa_manager);
-#endif
 
   void StartGrpcServer(
       int raiden_worker_port,

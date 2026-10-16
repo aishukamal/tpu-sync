@@ -98,8 +98,15 @@ TorchKVCacheManager::UnpackedLayers TorchKVCacheManager::UnpackLayers(
     const std::vector<std::vector<xla::PjRtBuffer*>>& device_buffers,
     bool unsafe_skip_buffer_lock) {
   UnpackedLayers unpacked;
-  unpacked.buffers =
+  absl::StatusOr<std::vector<std::vector<raiden::RaidenBufferHandle>>> buffers =
       ::tpu_raiden::UnpackLayers(device_buffers, unsafe_skip_buffer_lock);
+  if (!buffers.ok()) {
+    if (absl::IsInvalidArgument(buffers.status())) {
+      throw std::invalid_argument(std::string(buffers.status().message()));
+    }
+    throw std::runtime_error(std::string(buffers.status().message()));
+  }
+  unpacked.buffers = *std::move(buffers);
   if (!unpacked.buffers.empty() && !unpacked.buffers[0].empty() &&
       unpacked.buffers[0][0].device) {
     unpacked.client = unpacked.buffers[0][0].device->client();

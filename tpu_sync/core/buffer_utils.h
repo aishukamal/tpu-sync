@@ -17,6 +17,7 @@
 
 #include <vector>
 
+#include "absl/status/statusor.h"
 #include "tpu_sync/core/raw_transfer_core.h"
 
 namespace xla {
@@ -27,12 +28,13 @@ namespace tpu_raiden {
 
 // Unpacks a 2D matrix of xla::PjRtBuffer pointers (layers x shards) into a 2D
 // matrix of raiden::RaidenBufferHandle.
-std::vector<std::vector<raiden::RaidenBufferHandle>> UnpackLayers(
-    const std::vector<std::vector<xla::PjRtBuffer*>>& device_buffers,
-    bool unsafe_skip_buffer_lock = false);
+absl::StatusOr<std::vector<std::vector<raiden::RaidenBufferHandle>>>
+UnpackLayers(const std::vector<std::vector<xla::PjRtBuffer*>>& device_buffers,
+             bool unsafe_skip_buffer_lock = false);
 
 // Alias for UnpackLayers
-inline std::vector<std::vector<raiden::RaidenBufferHandle>> UnpackPjRtBuffers(
+inline absl::StatusOr<std::vector<std::vector<raiden::RaidenBufferHandle>>>
+UnpackPjRtBuffers(
     const std::vector<std::vector<xla::PjRtBuffer*>>& device_buffers,
     bool unsafe_skip_buffer_lock = false) {
   return UnpackLayers(device_buffers, unsafe_skip_buffer_lock);

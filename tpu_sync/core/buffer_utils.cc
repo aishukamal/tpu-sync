@@ -15,10 +15,11 @@
 #include "tpu_sync/core/buffer_utils.h"
 
 #include <cstddef>
-#include <stdexcept>
 #include <utility>
 #include <vector>
 
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "xla/pjrt/c/pjrt_c_api.h"
 #include "xla/pjrt/c/pjrt_c_api_raw_buffer_extension.h"
@@ -28,9 +29,9 @@
 
 namespace tpu_raiden {
 
-std::vector<std::vector<raiden::RaidenBufferHandle>> UnpackLayers(
-    const std::vector<std::vector<xla::PjRtBuffer*>>& device_buffers,
-    bool unsafe_skip_buffer_lock) {
+absl::StatusOr<std::vector<std::vector<raiden::RaidenBufferHandle>>>
+UnpackLayers(const std::vector<std::vector<xla::PjRtBuffer*>>& device_buffers,
+             bool unsafe_skip_buffer_lock) {
   std::vector<std::vector<raiden::RaidenBufferHandle>> handles;
   size_t num_layers = device_buffers.size();
   if (num_layers == 0) return handles;
@@ -40,7 +41,7 @@ std::vector<std::vector<raiden::RaidenBufferHandle>> UnpackLayers(
 
   for (size_t l = 0; l < num_layers; ++l) {
     if (device_buffers[l].size() != num_shards) {
-      throw std::invalid_argument(
+      return absl::InvalidArgumentError(
           "Symmetrical shards count mismatch across layers during PjRtBuffer "
           "unpack");
     }
@@ -56,14 +57,16 @@ std::vector<std::vector<raiden::RaidenBufferHandle>> UnpackLayers(
             pjrt::CreateRawBufferExtension(nullptr);
         extension = &kCpuRawBufferExtension;
       }
-      auto handle_or = raiden::RaidenBufferHandle::Acquire(
-          pjrt_buf, c_api, extension, unsafe_skip_buffer_lock);
-      if (!handle_or.ok()) {
-        throw std::runtime_error(absl::StrCat(
-            "Failed to acquire RaidenBufferHandle: ",
-            handle_or.status().message()));
+      absl::StatusOr<raiden::RaidenBufferHandle> handle =
+          raiden::RaidenBufferHandle::Acquire(pjrt_buf, c_api, extension,
+                                              unsafe_skip_buffer_lock);
+      if (!handle.ok()) {
+        return absl::Status(
+            handle.status().code(),
+            absl::StrCat("Failed to acquire RaidenBufferHandle: ",
+                         handle.status().message()));
       }
-      shard_buffers.push_back(std::move(handle_or.value()));
+      shard_buffers.push_back(*std::move(handle));
     }
     handles.push_back(std::move(shard_buffers));
   }

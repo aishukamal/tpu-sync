@@ -28,7 +28,7 @@ namespace {
 
 TEST(BufferUtilsTest, UnpackLayersEmptyReturnsEmpty) {
   std::vector<std::vector<xla::PjRtBuffer*>> empty;
-  auto handles = UnpackLayers(empty);
+  TF_ASSERT_OK_AND_ASSIGN(auto handles, UnpackLayers(empty));
   EXPECT_TRUE(handles.empty());
 }
 
@@ -51,7 +51,9 @@ TEST(BufferUtilsTest, UnpackLayersSucceedsWithCpuBuffers) {
   std::vector<std::vector<xla::PjRtBuffer*>> device_buffers = {
       {pjrt_buffer.get()}};
 
-  auto handles = UnpackLayers(device_buffers, /*unsafe_skip_buffer_lock=*/true);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto handles,
+      UnpackLayers(device_buffers, /*unsafe_skip_buffer_lock=*/true));
   ASSERT_EQ(handles.size(), 1);
   ASSERT_EQ(handles[0].size(), 1);
   EXPECT_NE(handles[0][0].device, nullptr);
